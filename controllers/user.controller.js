@@ -53,7 +53,7 @@ export const register = async (req, res) => {
     });
 
     return res.status(201).json({
-      message: "User created successfully",
+      message: "Profile created Please Log in To Explore the Services",
     });
   } catch (error) {
     if (error.code === 11000) {
