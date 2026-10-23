@@ -22,7 +22,7 @@ app.use(
 
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://my-portfolio.vercel.app",
+  "https://connect-pros-frontend.vercel.app",
 ];
 
 app.use(
