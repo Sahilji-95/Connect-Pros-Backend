@@ -1,0 +1,84 @@
+import {
+  register,
+  login,
+  uploadProfilePicture,
+  updateProfile,
+  getUserAndProfile,
+  updateProfileData,
+  getAllUserProfile,
+  dwonlaodProfile,
+  sendConnecton,
+  getMyConnectionReq,
+  myAllConnections,
+  acceptConnectionRequest,
+  getProfileByUsername,
+  getConnectionStatus,
+  getAllMyConnections,
+} from "../controllers/user.controller.js";
+
+import { authLimiter } from "../middleware/rate-limiter.js";
+
+import { Router } from "express";
+import multer from "multer";
+import { authMiddleware } from "../middleware/auth.js";
+
+const router = Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed!"));
+    }
+  },
+});
+
+router.route("/register").post(authLimiter, register);
+router.route("/login").post(authLimiter, login);
+
+router.route("/user/get_all_user").get(getAllUserProfile);
+router.route("/user/get_profile_by_username").get(getProfileByUsername);
+router.route("/user/dwonlaod_resume").get(dwonlaodProfile);
+
+router
+  .route("/upload_profile_picture")
+  .post(authMiddleware, upload.single("profile_picture"), uploadProfilePicture);
+
+router.route("/update_profile").post(authMiddleware, updateProfile);
+
+router.route("/get_user_and_profile").get(authMiddleware, getUserAndProfile);
+
+router.route("/profile_to_update").post(authMiddleware, updateProfileData);
+
+router
+  .route("/user/send_connection_request")
+  .post(authMiddleware, sendConnecton);
+
+router
+  .route("/user/get_connection_request")
+  .get(authMiddleware, getMyConnectionReq);
+
+router
+  .route("/user/get_all_connection_request")
+  .get(authMiddleware, myAllConnections);
+
+router
+  .route("/user/accept_connection_request")
+  .post(authMiddleware, acceptConnectionRequest);
+
+router
+  .route("/user/connection_status")
+  .get(authMiddleware, getConnectionStatus);
+
+router
+  .route("/user/get_my_connections")
+  .get(authMiddleware, getAllMyConnections);
+
+export default router;
