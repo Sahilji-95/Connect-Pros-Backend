@@ -349,12 +349,17 @@ export const updateProfileData = async (req, res) => {
 // GET ALL PUBLIC USER PROFILES
 export const getAllUserProfile = async (req, res) => {
   try {
-    const allUser = await Profile.find({}).populate(
-      "userId",
-      "username profilePicture email name",
-    );
+    const allUser = await Profile.find({})
+      .populate({
+        path: "userId",
+        select: "username profilePicture email name",
+        match: { _id: { $ne: null } },
+      })
+      .lean();
 
-    return res.status(200).json(allUser);
+    const validUsers = allUser.filter((profile) => profile.userId !== null);
+
+    return res.status(200).json(validUsers);
   } catch (error) {
     return res.status(500).json({
       message: error.message,
