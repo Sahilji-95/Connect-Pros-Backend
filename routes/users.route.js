@@ -14,6 +14,7 @@ import {
   getProfileByUsername,
   getConnectionStatus,
   getAllMyConnections,
+  logout,
 } from "../controllers/user.controller.js";
 
 import { authLimiter } from "../middleware/rate-limiter.js";
@@ -42,6 +43,7 @@ const upload = multer({
 
 router.route("/register").post(authLimiter, register);
 router.route("/login").post(authLimiter, login);
+router.route("/logout").post(logout);
 
 router.route("/user/get_all_user").get(getAllUserProfile);
 router.route("/user/get_profile_by_username").get(getProfileByUsername);

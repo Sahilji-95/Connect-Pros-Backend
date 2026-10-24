@@ -68,24 +68,31 @@ export const register = async (req, res) => {
   }
 };
 
-// LOGIN: JWT + HTTPONLY COOKIE
+// LOGIN
+
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    if (
+      typeof email !== "string" ||
+      typeof password !== "string" ||
+      !email.trim() ||
+      !password
+    ) {
       return res.status(400).json({
+        success: false,
         message: "Email and password are required",
       });
     }
 
     const user = await User.findOne({
       email: email.trim().toLowerCase(),
-      active: true,
     });
 
     if (!user) {
       return res.status(401).json({
+        success: false,
         message: "Invalid credentials",
       });
     }
@@ -94,12 +101,25 @@ export const login = async (req, res) => {
 
     if (!passwordMatches) {
       return res.status(401).json({
+        success: false,
         message: "Invalid credentials",
       });
     }
 
+    if (user.active === false) {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is inactive. Please contact support.",
+      });
+    }
+
     if (!process.env.JWT_SECRET) {
-      throw new Error("JWT_SECRET is not configured");
+      console.error("JWT_SECRET is not configured");
+
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+      });
     }
 
     const token = jwt.sign(
@@ -112,6 +132,7 @@ export const login = async (req, res) => {
       .cookie("token", token, cookieOptions)
       .status(200)
       .json({
+        success: true,
         message: "Login successful",
         user: {
           _id: user._id,
@@ -122,15 +143,20 @@ export const login = async (req, res) => {
         },
       });
   } catch (error) {
+    console.error("Login error:", error);
+
     return res.status(500).json({
-      message: error.message,
+      success: false,
+      message: "Internal server error",
     });
   }
 };
 
 // LOGOUT
+
 export const logout = (req, res) => {
   return res.clearCookie("token", cookieOptions).status(200).json({
+    success: true,
     message: "Logout successful",
   });
 };
@@ -173,7 +199,7 @@ export const uploadProfilePicture = async (req, res) => {
         message: "User not found",
       });
     }
-    // Upload image buffer directly to Cloudinary
+
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
@@ -189,7 +215,6 @@ export const uploadProfilePicture = async (req, res) => {
       stream.end(req.file.buffer);
     });
 
-    // Save Cloudinary URL in MongoDB
     user.profilePicture = result.secure_url;
     await user.save();
 
@@ -347,13 +372,13 @@ export const updateProfileData = async (req, res) => {
 };
 
 // GET ALL PUBLIC USER PROFILES
+
 export const getAllUserProfile = async (req, res) => {
   try {
     const allUser = await Profile.find({})
       .populate({
         path: "userId",
-        select: "username profilePicture email name",
-        match: { _id: { $ne: null } },
+        select: "username profilePicture name",
       })
       .lean();
 
@@ -361,8 +386,10 @@ export const getAllUserProfile = async (req, res) => {
 
     return res.status(200).json(validUsers);
   } catch (error) {
+    console.error("Get all user profiles error:", error);
+
     return res.status(500).json({
-      message: error.message,
+      message: "Internal server error",
     });
   }
 };
