@@ -44,11 +44,13 @@ router.route("/post/delete_post").delete(authMiddleware, deletePost);
 
 router.route("/post/like").post(authMiddleware, increment_likes);
 
-router.route("/post/username/:username").get(getPostsByUsername);
+router
+  .route("/post/username/:username")
+  .get(authMiddleware, getPostsByUsername);
 
 router.route("/comment/create_comment").post(authMiddleware, commentPost);
 
-router.route("/comment/get_comment").get(getComment);
+router.route("/comment/get_comment").get(authMiddleware, getComment);
 
 router.route("/comment/delete_comment").delete(authMiddleware, deleteComment);
 
