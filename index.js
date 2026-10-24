@@ -11,6 +11,7 @@ import { generalLimiter } from "./middleware/rate-limiter.js";
 dotenv.config();
 
 let app = express();
+app.set("trust proxy", 1);
 
 app.use(
   helmet({

@@ -137,6 +137,18 @@ export const deletePost = async (req, res) => {
       });
     }
 
+    const commentsBefore = await Comment.countDocuments({
+      postId: post._id,
+    });
+
+    console.log("Post ID:", post._id);
+    console.log("Comments before deletion:", commentsBefore);
+
+    const result = await Comment.deleteMany({
+      postId: post._id,
+    });
+
+    console.log("Delete result:", result);
     await post.deleteOne();
 
     return res.status(200).json({
@@ -255,6 +267,7 @@ export const deleteComment = async (req, res) => {
 };
 
 //LIKE INCREMENT
+
 export const increment_likes = async (req, res) => {
   try {
     const { post_id } = req.body;
@@ -266,27 +279,43 @@ export const increment_likes = async (req, res) => {
       });
     }
 
-    const post = await Post.findById(post_id);
+    const existing = await Post.findById(post_id).select("likedBy");
 
-    if (!post) {
+    if (!existing) {
       return res.status(404).json({
         message: "Post not found",
       });
     }
 
-    const alreadyLiked = (post.likedBy || []).some(
+    const alreadyLiked = (existing.likedBy || []).some(
       (id) => id.toString() === userId.toString(),
     );
 
-    if (alreadyLiked) {
-      post.likedBy.pull(userId);
-      post.likes = Math.max(0, (post.likes || 0) - 1);
-    } else {
-      post.likedBy.push(userId);
-      post.likes = (post.likes || 0) + 1;
-    }
+    const post = await Post.findOneAndUpdate(
+      {
+        _id: post_id,
+        ...(alreadyLiked ? { likedBy: userId } : { likedBy: { $ne: userId } }),
+      },
+      alreadyLiked
+        ? {
+            $pull: { likedBy: userId },
+            $inc: { likes: -1 },
+          }
+        : {
+            $addToSet: { likedBy: userId },
+            $inc: { likes: 1 },
+          },
+      {
+        new: true,
+        runValidators: true,
+      },
+    );
 
-    await post.save();
+    if (!post) {
+      return res.status(409).json({
+        message: "Like status changed. Please try again.",
+      });
+    }
 
     return res.status(200).json({
       message: alreadyLiked ? "Post unliked" : "Post liked",
@@ -295,8 +324,10 @@ export const increment_likes = async (req, res) => {
       post_id: post._id,
     });
   } catch (error) {
+    console.error("Increment likes error:", error);
+
     return res.status(500).json({
-      message: error.message,
+      message: "Internal server error",
     });
   }
 };

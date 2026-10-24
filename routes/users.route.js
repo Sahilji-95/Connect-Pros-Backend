@@ -45,8 +45,10 @@ router.route("/register").post(authLimiter, register);
 router.route("/login").post(authLimiter, login);
 router.route("/logout").post(logout);
 
-router.route("/user/get_all_user").get(getAllUserProfile);
-router.route("/user/get_profile_by_username").get(getProfileByUsername);
+router.route("/user/get_all_user").get(authMiddleware, getAllUserProfile);
+router
+  .route("/user/get_profile_by_username")
+  .get(authMiddleware, getProfileByUsername);
 router.route("/user/dwonlaod_resume").get(dwonlaodProfile);
 
 router

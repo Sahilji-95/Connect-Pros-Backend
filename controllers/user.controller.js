@@ -4,6 +4,7 @@ import connectionReq from "../models/connection.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import convertUserDataTOPDF from "../utils/pdfHelper.js";
+import { z } from "zod";
 
 import cloudinary from "../config/cloudinary.js";
 
@@ -18,7 +19,21 @@ const cookieOptions = {
 // REGISTER
 export const register = async (req, res) => {
   try {
-    const { name, email, password, username } = req.body;
+    const registerSchema = z.object({
+      name: z.string().trim().min(2).max(60),
+      username: z
+        .string()
+        .trim()
+        .regex(/^[a-zA-Z0-9_]{3,20}$/),
+      email: z.string().trim().toLowerCase().email(),
+      password: z.string().min(8).max(72),
+    });
+
+    const parsed = registerSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: parsed.error.issues[0].message });
+    }
+    const { name, email, password, username } = parsed.data;
 
     if (!name || !email || !password || !username) {
       return res.status(400).json({
@@ -68,31 +83,24 @@ export const register = async (req, res) => {
   }
 };
 
-// LOGIN
-
+// LOGIN: JWT + HTTPONLY COOKIE
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (
-      typeof email !== "string" ||
-      typeof password !== "string" ||
-      !email.trim() ||
-      !password
-    ) {
+    if (!email || !password) {
       return res.status(400).json({
-        success: false,
         message: "Email and password are required",
       });
     }
 
     const user = await User.findOne({
       email: email.trim().toLowerCase(),
+      active: true,
     });
 
     if (!user) {
       return res.status(401).json({
-        success: false,
         message: "Invalid credentials",
       });
     }
@@ -101,25 +109,12 @@ export const login = async (req, res) => {
 
     if (!passwordMatches) {
       return res.status(401).json({
-        success: false,
         message: "Invalid credentials",
       });
     }
 
-    if (user.active === false) {
-      return res.status(403).json({
-        success: false,
-        message: "Your account is inactive. Please contact support.",
-      });
-    }
-
     if (!process.env.JWT_SECRET) {
-      console.error("JWT_SECRET is not configured");
-
-      return res.status(500).json({
-        success: false,
-        message: "Internal server error",
-      });
+      throw new Error("JWT_SECRET is not configured");
     }
 
     const token = jwt.sign(
@@ -132,7 +127,6 @@ export const login = async (req, res) => {
       .cookie("token", token, cookieOptions)
       .status(200)
       .json({
-        success: true,
         message: "Login successful",
         user: {
           _id: user._id,
@@ -143,20 +137,15 @@ export const login = async (req, res) => {
         },
       });
   } catch (error) {
-    console.error("Login error:", error);
-
     return res.status(500).json({
-      success: false,
-      message: "Internal server error",
+      message: error.message,
     });
   }
 };
 
 // LOGOUT
-
 export const logout = (req, res) => {
   return res.clearCookie("token", cookieOptions).status(200).json({
-    success: true,
     message: "Logout successful",
   });
 };
@@ -199,7 +188,7 @@ export const uploadProfilePicture = async (req, res) => {
         message: "User not found",
       });
     }
-
+    // Upload image buffer directly to Cloudinary
     const result = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
@@ -215,6 +204,7 @@ export const uploadProfilePicture = async (req, res) => {
       stream.end(req.file.buffer);
     });
 
+    // Save Cloudinary URL in MongoDB
     user.profilePicture = result.secure_url;
     await user.save();
 
@@ -372,13 +362,13 @@ export const updateProfileData = async (req, res) => {
 };
 
 // GET ALL PUBLIC USER PROFILES
-
 export const getAllUserProfile = async (req, res) => {
   try {
     const allUser = await Profile.find({})
       .populate({
         path: "userId",
-        select: "username profilePicture name",
+        select: "username profilePicture email name",
+        match: { _id: { $ne: null } },
       })
       .lean();
 
@@ -386,10 +376,8 @@ export const getAllUserProfile = async (req, res) => {
 
     return res.status(200).json(validUsers);
   } catch (error) {
-    console.error("Get all user profiles error:", error);
-
     return res.status(500).json({
-      message: "Internal server error",
+      message: error.message,
     });
   }
 };
