@@ -1,5 +1,4 @@
 import {
-  register,
   login,
   uploadProfilePicture,
   updateProfile,
@@ -15,9 +14,16 @@ import {
   getConnectionStatus,
   getAllMyConnections,
   logout,
+  sendEmailOtpController,
+  verifyEmailOtp,
+  resendEmailOtp,
 } from "../controllers/user.controller.js";
 
-import { authLimiter } from "../middleware/rate-limiter.js";
+import {
+  authLimiter,
+  emailOtpLimiter,
+  verifyEmailOtpLimiter,
+} from "../middleware/rate-limiter.js";
 
 import { Router } from "express";
 import multer from "multer";
@@ -41,7 +47,10 @@ const upload = multer({
   },
 });
 
-router.route("/register").post(authLimiter, register);
+router.route("/send-email-otp").post(emailOtpLimiter, sendEmailOtpController);
+router.route("/verify-email-otp").post(verifyEmailOtpLimiter, verifyEmailOtp);
+router.route("/resend-email-otp").post(emailOtpLimiter, resendEmailOtp);
+
 router.route("/login").post(authLimiter, login);
 router.route("/logout").post(logout);
 

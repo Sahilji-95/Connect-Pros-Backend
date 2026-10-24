@@ -1,10 +1,19 @@
 import User from "../models/user.model.js";
 import Profile from "../models/profile.model.js";
 import connectionReq from "../models/connection.model.js";
+import PendingSignup from "../models/pendingSignup.model.js";
+
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import convertUserDataTOPDF from "../utils/pdfHelper.js";
+import crypto from "node:crypto";
 import { z } from "zod";
+
+import {
+  generateEmailOtp,
+  hashEmailOtp,
+  sendEmailOtp,
+} from "../utils/sendEmailOtp.js";
 
 import cloudinary from "../config/cloudinary.js";
 
@@ -16,86 +25,283 @@ const cookieOptions = {
   path: "/",
 };
 
-// REGISTER
-export const register = async (req, res) => {
+export const sendEmailOtpController = async (req, res) => {
   try {
-    const registerSchema = z.object({
+    const schema = z.object({
       name: z.string().trim().min(2).max(60),
       username: z
         .string()
         .trim()
-        .regex(/^[a-zA-Z0-9_]{3,20}$/),
+        .regex(
+          /^[a-zA-Z0-9_-]{3,20}$/,
+          "Username must be 3–20 characters and contain only letters, numbers, underscores, or hyphens.",
+        ),
       email: z.string().trim().toLowerCase().email(),
       password: z.string().min(8).max(72),
     });
 
-    const parsed = registerSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: parsed.error.issues[0].message });
-    }
-    const { name, email, password, username } = parsed.data;
+    const parsed = schema.safeParse(req.body);
 
-    if (!name || !email || !password || !username) {
+    if (!parsed.success) {
       return res.status(400).json({
-        message: "All fields are required",
+        message: parsed.error.issues[0].message,
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedUsername = username.trim();
+    const { name, username, email, password } = parsed.data;
 
-    const exists = await User.findOne({
-      $or: [{ email: normalizedEmail }, { username: normalizedUsername }],
+    // Check for an already registered account.
+    const existingUser = await User.findOne({
+      $or: [{ email }, { username }],
     });
 
-    if (exists) {
+    if (existingUser) {
       return res.status(409).json({
-        message: "Email or username already exists",
+        message: "Email or username already exists.",
       });
     }
 
+    // Check whether this email or username has a pending signup.
+    const existingPending = await PendingSignup.findOne({
+      $or: [{ email }, { username }],
+    });
+
+    const now = Date.now();
+
+    if (existingPending) {
+      // Do not let one email overwrite another person's pending signup.
+      if (
+        existingPending.email !== email ||
+        existingPending.username !== username
+      ) {
+        return res.status(409).json({
+          message:
+            "Email or username is already being used in another pending signup.",
+        });
+      }
+
+      // Apply a 60-second resend cooldown.
+      if (existingPending.emailOtpLastSentAt) {
+        const elapsed = now - existingPending.emailOtpLastSentAt.getTime();
+
+        if (elapsed < 60 * 1000) {
+          const retryAfter = Math.ceil((60 * 1000 - elapsed) / 1000);
+
+          return res.status(429).json({
+            message: `Please wait ${retryAfter} seconds before requesting another OTP.`,
+            retryAfter,
+          });
+        }
+      }
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = hashEmailOtp(otp);
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    const newUser = await User.create({
-      name,
-      email: normalizedEmail,
-      username: normalizedUsername,
-      password: hashedPassword,
-    });
+    if (existingPending) {
+      existingPending.name = name;
+      existingPending.password = hashedPassword;
+      existingPending.emailOtpHash = otpHash;
+      existingPending.emailOtpExpiry = new Date(now + 5 * 60 * 1000);
+      existingPending.emailOtpAttempts = 0;
+      existingPending.emailOtpLastSentAt = new Date(now);
 
-    await Profile.create({
-      userId: newUser._id,
-    });
+      await existingPending.save();
+    } else {
+      await PendingSignup.create({
+        name,
+        username,
+        email,
+        password: hashedPassword,
+        emailOtpHash: otpHash,
+        emailOtpExpiry: new Date(now + 5 * 60 * 1000),
+        emailOtpAttempts: 0,
+        emailOtpLastSentAt: new Date(now),
+      });
+    }
 
-    return res.status(201).json({
-      message: "Profile created Please Log in To Explore the Services",
+    try {
+      await sendEmailOtp(email, otp);
+    } catch (emailError) {
+      console.error("OTP email delivery failed:", emailError.message);
+
+      return res.status(502).json({
+        message:
+          "Unable to send verification email. Please try again after the cooldown.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Verification code sent to your email.",
     });
   } catch (error) {
     if (error.code === 11000) {
       return res.status(409).json({
-        message: "Email or username already exists",
+        message: "Email or username already exists.",
       });
     }
 
+    console.error("Send email OTP error:", error.message);
+
     return res.status(500).json({
-      message: error.message,
+      message: "Something went wrong. Please try again.",
+    });
+  }
+};
+
+export const verifyEmailOtp = async (req, res) => {
+  try {
+    const schema = z.object({
+      email: z.string().trim().toLowerCase().email(),
+      otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits"),
+    });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { email, otp } = parsed.data;
+
+    // Only pending signup is checked here.
+    const pendingSignup = await PendingSignup.findOne({ email });
+
+    if (!pendingSignup) {
+      return res.status(404).json({
+        message: "Signup not found or expired. Please sign up again.",
+      });
+    }
+
+    if (!pendingSignup.emailOtpHash || !pendingSignup.emailOtpExpiry) {
+      return res.status(400).json({
+        message: "OTP not found. Please request a new OTP.",
+      });
+    }
+
+    if (pendingSignup.emailOtpExpiry.getTime() <= Date.now()) {
+      pendingSignup.emailOtpHash = "";
+      pendingSignup.emailOtpExpiry = new Date(0);
+      pendingSignup.emailOtpAttempts = 0;
+      await pendingSignup.save();
+
+      return res.status(400).json({
+        message: "OTP expired. Please request a new OTP.",
+      });
+    }
+
+    if (pendingSignup.emailOtpAttempts >= 5) {
+      return res.status(429).json({
+        message: "Too many incorrect attempts. Request a new OTP.",
+      });
+    }
+
+    const submittedHash = crypto.createHash("sha256").update(otp).digest();
+
+    const storedHash = Buffer.from(pendingSignup.emailOtpHash, "hex");
+
+    const isValid =
+      storedHash.length === submittedHash.length &&
+      crypto.timingSafeEqual(storedHash, submittedHash);
+
+    if (!isValid) {
+      pendingSignup.emailOtpAttempts += 1;
+
+      if (pendingSignup.emailOtpAttempts >= 5) {
+        pendingSignup.emailOtpHash = "";
+        pendingSignup.emailOtpExpiry = new Date(0);
+      }
+
+      await pendingSignup.save();
+
+      return res.status(400).json({
+        message:
+          pendingSignup.emailOtpAttempts >= 5
+            ? "Too many incorrect attempts. Request a new OTP."
+            : "Invalid OTP. Please try again.",
+        attemptsRemaining: Math.max(0, 5 - pendingSignup.emailOtpAttempts),
+      });
+    }
+
+    // Prevent duplicate accounts if an account was created meanwhile.
+    const existingUser = await User.findOne({
+      $or: [
+        { email: pendingSignup.email },
+        { username: pendingSignup.username },
+      ],
+    });
+
+    if (existingUser) {
+      await PendingSignup.deleteOne({ _id: pendingSignup._id });
+
+      return res.status(409).json({
+        message:
+          "Email or username is already registered. Please log in or sign up with different details.",
+      });
+    }
+
+    // Create the actual user only after OTP verification.
+    const user = await User.create({
+      name: pendingSignup.name,
+      username: pendingSignup.username,
+      email: pendingSignup.email,
+      password: pendingSignup.password, // Already bcrypt-hashed
+      isEmailVerified: true,
+    });
+
+    try {
+      await Profile.create({ userId: user._id });
+    } catch (profileError) {
+      // Roll back user creation if profile creation fails.
+      await User.deleteOne({ _id: user._id });
+      throw profileError;
+    }
+
+    await PendingSignup.deleteOne({ _id: pendingSignup._id });
+
+    return res.status(200).json({
+      message: "Email verified successfully. You can now log in.",
+    });
+  } catch (error) {
+    // MongoDB duplicate-key protection for concurrent requests.
+    if (error.code === 11000) {
+      return res.status(409).json({
+        message: "Email or username is already registered.",
+      });
+    }
+
+    console.error("Verify email OTP error:", error.message);
+
+    return res.status(500).json({
+      message: "Unable to verify email. Please try again.",
     });
   }
 };
 
 // LOGIN: JWT + HTTPONLY COOKIE
+
 export const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const loginSchema = z.object({
+      email: z.string().trim().toLowerCase().email(),
+      password: z.string().min(1, "Password is required").max(72),
+    });
 
-    if (!email || !password) {
+    const parsed = loginSchema.safeParse(req.body);
+
+    if (!parsed.success) {
       return res.status(400).json({
-        message: "Email and password are required",
+        message: parsed.error.issues[0].message,
       });
     }
 
+    const { email, password } = parsed.data;
+
     const user = await User.findOne({
-      email: email.trim().toLowerCase(),
+      email,
       active: true,
     });
 
@@ -110,6 +316,13 @@ export const login = async (req, res) => {
     if (!passwordMatches) {
       return res.status(401).json({
         message: "Invalid credentials",
+      });
+    }
+
+    if (user.isEmailVerified !== true) {
+      return res.status(403).json({
+        message: "Please verify your email before logging in.",
+        code: "EMAIL_NOT_VERIFIED",
       });
     }
 
@@ -137,12 +350,95 @@ export const login = async (req, res) => {
         },
       });
   } catch (error) {
+    console.error("Login error:", error);
+
     return res.status(500).json({
-      message: error.message,
+      message: "Something went wrong. Please try again.",
     });
   }
 };
 
+export const resendEmailOtp = async (req, res) => {
+  try {
+    const schema = z.object({
+      email: z.string().trim().toLowerCase().email(),
+    });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { email } = parsed.data;
+
+    // Find the temporary signup, not the actual User.
+    const pendingSignup = await PendingSignup.findOne({ email });
+
+    if (!pendingSignup) {
+      return res.status(404).json({
+        message: "Signup not found or expired. Please sign up again.",
+      });
+    }
+
+    const now = Date.now();
+    const cooldownMs = 60 * 1000;
+
+    // Prevent repeated OTP requests within 60 seconds.
+    if (pendingSignup.emailOtpLastSentAt) {
+      const elapsed = now - pendingSignup.emailOtpLastSentAt.getTime();
+
+      if (elapsed < cooldownMs) {
+        const retryAfter = Math.ceil((cooldownMs - elapsed) / 1000);
+
+        return res.status(429).json({
+          message: `Please wait ${retryAfter} seconds before requesting another OTP.`,
+          retryAfter,
+        });
+      }
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = hashEmailOtp(otp);
+
+    pendingSignup.emailOtpHash = otpHash;
+    pendingSignup.emailOtpExpiry = new Date(now + 5 * 60 * 1000);
+    pendingSignup.emailOtpAttempts = 0;
+    pendingSignup.emailOtpLastSentAt = new Date(now);
+
+    await pendingSignup.save();
+
+    try {
+      await sendEmailOtp(email, otp);
+    } catch (emailError) {
+      // Invalidate the OTP if delivery fails.
+      pendingSignup.emailOtpHash = "";
+      pendingSignup.emailOtpExpiry = new Date(0);
+      pendingSignup.emailOtpAttempts = 0;
+      pendingSignup.emailOtpLastSentAt = null;
+
+      await pendingSignup.save();
+
+      console.error("Resend OTP email error:", emailError.message);
+
+      return res.status(502).json({
+        message: "Unable to resend OTP. Please try again.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "A new verification code has been sent.",
+    });
+  } catch (error) {
+    console.error("Resend OTP controller error:", error);
+
+    return res.status(500).json({
+      message: "Something went wrong. Please try again.",
+    });
+  }
+};
 // LOGOUT
 export const logout = (req, res) => {
   return res.clearCookie("token", cookieOptions).status(200).json({

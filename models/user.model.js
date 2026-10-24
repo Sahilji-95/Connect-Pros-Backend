@@ -29,6 +29,10 @@ const UserSchema = new mongoose.Schema(
       default:
         "https://res.cloudinary.com/dodj3pvt4/image/upload/v1792695130/linkedin/posts/tm9kvghsbw7xoez27vex.png",
     },
+    isEmailVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true },
 );
