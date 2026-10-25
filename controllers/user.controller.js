@@ -15,6 +15,8 @@ import {
   sendEmailOtp,
 } from "../utils/sendEmailOtp.js";
 
+import { sendForgotPasswordOtp } from "../utils/forgotPasswordEmail.js";
+
 import cloudinary from "../config/cloudinary.js";
 
 const cookieOptions = {
@@ -24,6 +26,10 @@ const cookieOptions = {
   maxAge: 24 * 60 * 60 * 1000,
   path: "/",
 };
+
+const OTP_EXPIRY_MS = 5 * 60 * 1000;
+const RESEND_COOLDOWN_MS = 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
 
 export const sendEmailOtpController = async (req, res) => {
   try {
@@ -281,6 +287,381 @@ export const verifyEmailOtp = async (req, res) => {
   }
 };
 
+//SENT FORGET PASSWORD OTP
+export const forgotPassword = async (req, res) => {
+  try {
+    const schema = z.object({
+      email: z.string().trim().toLowerCase().email().max(254),
+    });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { email } = parsed.data;
+
+    // OTP is sent only if a registered user exists.
+    const user = await User.findOne({ email });
+
+    // Use the same response to avoid revealing registered emails.
+    const genericMessage =
+      "If an account exists with this email, a password reset code has been sent.";
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found. Please register first.",
+      });
+    }
+
+    const now = Date.now();
+
+    // Apply a 60-second resend cooldown.
+    if (user.resetPasswordLastSentAt) {
+      const elapsed = now - user.resetPasswordLastSentAt.getTime();
+
+      if (elapsed < RESEND_COOLDOWN_MS) {
+        const retryAfter = Math.ceil((RESEND_COOLDOWN_MS - elapsed) / 1000);
+
+        return res.status(429).json({
+          message: `Please wait ${retryAfter} seconds before requesting another OTP.`,
+          retryAfter,
+        });
+      }
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = hashEmailOtp(otp);
+
+    // Save OTP hash and expiry.
+    user.resetPasswordOTP = otpHash;
+    user.resetPasswordOTPExpires = new Date(now + OTP_EXPIRY_MS);
+    user.resetPasswordAttempts = 0;
+    user.resetPasswordLastSentAt = new Date(now);
+
+    await user.save();
+
+    try {
+      await sendForgotPasswordOtp(email, otp);
+    } catch (emailError) {
+      console.error("Forgot password OTP delivery failed:", emailError.message);
+
+      // Invalidate the OTP if email delivery fails.
+      user.resetPasswordOTP = null;
+      user.resetPasswordOTPExpires = null;
+      user.resetPasswordAttempts = 0;
+
+      await user.save();
+
+      return res.status(502).json({
+        message: "Unable to send the OTP. Please try again later.",
+      });
+    }
+
+    return res.status(200).json({
+      message: genericMessage,
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error.message);
+
+    return res.status(500).json({
+      message: "Something went wrong. Please try again.",
+    });
+  }
+};
+
+//VERIFY THE RESET PASSWORD OTP
+
+export const verifyResetOTP = async (req, res) => {
+  try {
+    const schema = z.object({
+      email: z.string().trim().toLowerCase().email(),
+      otp: z.string().regex(/^\d{6}$/, "OTP must be 6 digits."),
+    });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { email, otp } = parsed.data;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found. Please register first.",
+      });
+    }
+
+    if (!user.resetPasswordOTP || !user.resetPasswordOTPExpires) {
+      return res.status(400).json({
+        message: "OTP not found. Please request a new OTP.",
+      });
+    }
+
+    // Check whether the OTP has expired.
+    if (user.resetPasswordOTPExpires.getTime() <= Date.now()) {
+      user.resetPasswordOTP = null;
+      user.resetPasswordOTPExpires = null;
+      user.resetPasswordAttempts = 0;
+
+      await user.save();
+
+      return res.status(400).json({
+        message: "OTP expired. Please request a new OTP.",
+      });
+    }
+
+    // Check the maximum allowed incorrect attempts.
+    if (user.resetPasswordAttempts >= MAX_OTP_ATTEMPTS) {
+      user.resetPasswordOTP = null;
+      user.resetPasswordOTPExpires = null;
+      user.resetPasswordAttempts = 0;
+
+      await user.save();
+
+      return res.status(429).json({
+        message: "Too many incorrect attempts. Please request a new OTP.",
+      });
+    }
+
+    const submittedHash = crypto.createHash("sha256").update(otp).digest();
+
+    const storedHash = Buffer.from(user.resetPasswordOTP, "hex");
+
+    const isValid =
+      /^[a-f0-9]{64}$/i.test(user.resetPasswordOTP) &&
+      storedHash.length === submittedHash.length &&
+      crypto.timingSafeEqual(storedHash, submittedHash);
+
+    if (!isValid) {
+      user.resetPasswordAttempts += 1;
+
+      const attemptsRemaining = MAX_OTP_ATTEMPTS - user.resetPasswordAttempts;
+
+      if (attemptsRemaining <= 0) {
+        user.resetPasswordOTP = null;
+        user.resetPasswordOTPExpires = null;
+        user.resetPasswordAttempts = 0;
+
+        await user.save();
+
+        return res.status(429).json({
+          message: "Too many incorrect attempts. Please request a new OTP.",
+          attemptsRemaining: 0,
+        });
+      }
+
+      await user.save();
+
+      return res.status(400).json({
+        message: "Invalid OTP. Please try again.",
+        attemptsRemaining,
+      });
+    }
+
+    // Generate a secure, temporary password-reset token.
+    const resetToken = crypto.randomBytes(32).toString("hex");
+
+    const resetTokenHash = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    user.resetPasswordTokenHash = resetTokenHash;
+    user.resetPasswordTokenExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+    // Consume the OTP after successful verification.
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpires = null;
+    user.resetPasswordAttempts = 0;
+
+    await user.save();
+
+    return res.status(200).json({
+      message: "OTP verified successfully.",
+      resetToken,
+      expiresIn: 600,
+    });
+  } catch (error) {
+    console.error("Verify reset OTP error:", error.message);
+
+    return res.status(500).json({
+      message: "Unable to verify OTP. Please try again.",
+    });
+  }
+};
+
+//RESET THE PASSWORD
+export const resetPassword = async (req, res) => {
+  try {
+    const schema = z
+      .object({
+        resetToken: z.string().regex(/^[a-f0-9]{64}$/i),
+        newPassword: z.string().min(8).max(72),
+        confirmPassword: z.string().min(8).max(72),
+      })
+      .refine((data) => data.newPassword === data.confirmPassword, {
+        message: "Passwords do not match.",
+        path: ["confirmPassword"],
+      });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { resetToken, newPassword } = parsed.data;
+
+    const resetTokenHash = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    // Find the user with the matching, unexpired reset token.
+    const user = await User.findOne({
+      resetPasswordTokenHash: resetTokenHash,
+      resetPasswordTokenExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message:
+          "Reset token is invalid or expired. Please verify your OTP again.",
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+    user.password = hashedPassword;
+    user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+
+    user.passwordChangedAt = new Date();
+
+    user.resetPasswordTokenHash = null;
+    user.resetPasswordTokenExpires = null;
+
+    user.resetPasswordOTP = null;
+    user.resetPasswordOTPExpires = null;
+    user.resetPasswordAttempts = 0;
+
+    await user.save();
+
+    res.clearCookie("token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      path: "/",
+    });
+
+    return res.status(200).json({
+      message:
+        "Password reset successfully. Please log in with your new password.",
+    });
+  } catch (error) {
+    console.error("Reset password error:", error.message);
+
+    return res.status(500).json({
+      message: "Unable to reset password. Please try again.",
+    });
+  }
+};
+
+//RESEND RESET PASSWORD OTP
+
+export const resendResetPasswordOTP = async (req, res) => {
+  try {
+    const schema = z.object({
+      email: z.string().trim().toLowerCase().email().max(254),
+    });
+
+    const parsed = schema.safeParse(req.body);
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0].message,
+      });
+    }
+
+    const { email } = parsed.data;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found. Please register first.",
+      });
+    }
+
+    const now = Date.now();
+
+    // 60-second resend cooldown
+    if (user.resetPasswordLastSentAt) {
+      const elapsed = now - user.resetPasswordLastSentAt.getTime();
+
+      if (elapsed < RESEND_COOLDOWN_MS) {
+        const retryAfter = Math.ceil((RESEND_COOLDOWN_MS - elapsed) / 1000);
+
+        return res.status(429).json({
+          message: `Please wait ${retryAfter} seconds before requesting another OTP.`,
+          retryAfter,
+        });
+      }
+    }
+
+    const otp = generateEmailOtp();
+    const otpHash = hashEmailOtp(otp);
+
+    user.resetPasswordOTP = otpHash;
+    user.resetPasswordOTPExpires = new Date(now + OTP_EXPIRY_MS);
+    user.resetPasswordAttempts = 0;
+    user.resetPasswordLastSentAt = new Date(now);
+
+    // Invalidate any previously issued reset token
+    user.resetPasswordTokenHash = null;
+    user.resetPasswordTokenExpires = null;
+
+    await user.save();
+
+    try {
+      await sendForgotPasswordOtp(email, otp);
+    } catch (emailError) {
+      console.error("Resend reset password OTP failed:", emailError.message);
+
+      user.resetPasswordOTP = null;
+      user.resetPasswordOTPExpires = null;
+      user.resetPasswordAttempts = 0;
+      await user.save();
+
+      return res.status(502).json({
+        message: "Unable to send OTP. Please try again later.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "A new OTP has been sent to your email.",
+      expiresIn: OTP_EXPIRY_MS / 1000,
+      retryAfter: RESEND_COOLDOWN_MS / 1000,
+    });
+  } catch (error) {
+    console.error("Resend reset OTP error:", error.message);
+
+    return res.status(500).json({
+      message: "Something went wrong. Please try again.",
+    });
+  }
+};
+
 // LOGIN: JWT + HTTPONLY COOKIE
 
 export const login = async (req, res) => {
@@ -331,7 +712,10 @@ export const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { userId: user._id.toString() },
+      {
+        userId: user._id.toString(),
+        tokenVersion: user.tokenVersion ?? 0,
+      },
       process.env.JWT_SECRET,
       { expiresIn: "1d" },
     );

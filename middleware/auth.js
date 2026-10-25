@@ -23,14 +23,20 @@ export const authMiddleware = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (!decoded.userId) {
+    if (
+      !decoded.userId ||
+      !Number.isInteger(decoded.tokenVersion) ||
+      !decoded.iat
+    ) {
       return res.status(401).json({
         success: false,
-        message: "Invalid authentication token.",
+        message: "Invalid authentication token. Please login again.",
       });
     }
 
-    const user = await User.findById(decoded.userId).select("_id active");
+    const user = await User.findById(decoded.userId).select(
+      "_id active tokenVersion",
+    );
 
     if (!user) {
       return res.status(401).json({
@@ -43,6 +49,14 @@ export const authMiddleware = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         message: "Your account is inactive. Please contact support.",
+      });
+    }
+
+    // Reject tokens from previous login versions.
+    if (decoded.tokenVersion !== (user.tokenVersion ?? 0)) {
+      return res.status(401).json({
+        success: false,
+        message: "Session expired. Please login again.",
       });
     }
 

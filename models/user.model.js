@@ -33,6 +33,38 @@ const UserSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    resetPasswordOTP: {
+      type: String,
+      default: null,
+    },
+    resetPasswordOTPExpires: {
+      type: Date,
+      default: null,
+    },
+    resetPasswordAttempts: {
+      type: Number,
+      default: 0,
+    },
+    resetPasswordLastSentAt: {
+      type: Date,
+      default: null,
+    },
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
+    resetPasswordTokenHash: {
+      type: String,
+      default: null,
+    },
+    resetPasswordTokenExpires: {
+      type: Date,
+      default: null,
+    },
+    tokenVersion: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );

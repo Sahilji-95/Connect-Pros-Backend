@@ -17,12 +17,17 @@ import {
   sendEmailOtpController,
   verifyEmailOtp,
   resendEmailOtp,
+  forgotPassword,
+  verifyResetOTP,
+  resetPassword,
+  resendResetPasswordOTP,
 } from "../controllers/user.controller.js";
 
 import {
   authLimiter,
   emailOtpLimiter,
   verifyEmailOtpLimiter,
+  resetPasswordLimiter,
 } from "../middleware/rate-limiter.js";
 
 import { Router } from "express";
@@ -50,6 +55,11 @@ const upload = multer({
 router.route("/send-email-otp").post(emailOtpLimiter, sendEmailOtpController);
 router.route("/verify-email-otp").post(verifyEmailOtpLimiter, verifyEmailOtp);
 router.route("/resend-email-otp").post(emailOtpLimiter, resendEmailOtp);
+
+router.route("/forgot-password").post(emailOtpLimiter, forgotPassword);
+router.route("/resend-reset-otp").post(emailOtpLimiter, resendResetPasswordOTP);
+router.route("/verify-reset-otp").post(verifyEmailOtpLimiter, verifyResetOTP);
+router.route("/reset-password").post(resetPasswordLimiter, resetPassword);
 
 router.route("/login").post(authLimiter, login);
 router.route("/logout").post(logout);
