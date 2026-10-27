@@ -13,6 +13,7 @@ import {
   getProfileByUsername,
   getConnectionStatus,
   getAllMyConnections,
+  deleteConnection,
   logout,
   sendEmailOtpController,
   verifyEmailOtp,
@@ -103,5 +104,9 @@ router
 router
   .route("/user/get_my_connections")
   .get(authMiddleware, getAllMyConnections);
+
+router
+  .route("/user/delete_connection")
+  .post(authMiddleware, deleteConnection);
 
 export default router;

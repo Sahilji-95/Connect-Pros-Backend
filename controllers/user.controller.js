@@ -1245,6 +1245,35 @@ export const getAllMyConnections = async (req, res) => {
   }
 };
 
+export const deleteConnection = async (req, res) => {
+  try {
+    const { connectionId } = req.body;
+    const userId = req.user._id;
+
+    if (!connectionId) {
+      return res.status(400).json({ message: "Connection ID is required" });
+    }
+
+    const connection = await connectionReq.findOne({
+      status: "accepted",
+      $or: [
+        { userId, connectionId },
+        { userId: connectionId, connectionId: userId },
+      ],
+    });
+
+    if (!connection) {
+      return res.status(404).json({ message: "Connection not found" });
+    }
+
+    await connection.deleteOne();
+
+    return res.status(200).json({ message: "Connection deleted" });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 // ACCEPT OR REJECT CONNECTION REQUEST
 export const acceptConnectionRequest = async (req, res) => {
   try {
