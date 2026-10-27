@@ -824,10 +824,30 @@ export const resendEmailOtp = async (req, res) => {
   }
 };
 // LOGOUT
-export const logout = (req, res) => {
-  return res.clearCookie("token", cookieOptions).status(200).json({
-    message: "Logout successful",
-  });
+export const logout = async (req, res) => {
+  try {
+    // Invalidate existing JWT sessions
+    await User.updateOne({ _id: req.user._id }, { $inc: { tokenVersion: 1 } });
+
+    // Disconnect active sockets for this user
+    const io = req.app.get("io");
+
+    if (io) {
+      io.in(`user:${req.user._id}`).disconnectSockets(true);
+    }
+
+    return res.clearCookie("token", cookieOptions).status(200).json({
+      success: true,
+      message: "Logout successful",
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Logout failed. Please try again.",
+    });
+  }
 };
 
 // CURRENT LOGGED-IN USER

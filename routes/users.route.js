@@ -62,7 +62,7 @@ router.route("/verify-reset-otp").post(verifyEmailOtpLimiter, verifyResetOTP);
 router.route("/reset-password").post(resetPasswordLimiter, resetPassword);
 
 router.route("/login").post(authLimiter, login);
-router.route("/logout").post(logout);
+router.route("/logout").post(authMiddleware, logout);
 
 router.route("/user/get_all_user").get(authMiddleware, getAllUserProfile);
 router

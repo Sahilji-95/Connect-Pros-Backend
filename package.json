@@ -15,6 +15,7 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cloudinary": "^2.11.0",
+    "cookie": "^2.0.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "crypto": "^1.0.1",
@@ -29,6 +30,8 @@
     "pdf-creator-node": "^4.0.1",
     "pdfkit": "^0.19.1",
     "resend": "^6.34.1",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4",
     "zod": "^4.6.7"
   }
 }
