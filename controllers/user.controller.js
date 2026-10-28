@@ -1427,3 +1427,118 @@ export const getProfileByUsername = async (req, res) => {
     });
   }
 };
+
+// GLOBAL USER SEARCH WITH CURSOR PAGINATION
+export const searchUsersByUsername = async (req, res) => {
+  try {
+    const q =
+      typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+
+    if (q.length < 1) {
+      return res.status(200).json({
+        users: [],
+        hasMore: false,
+        nextCursor: null,
+      });
+    }
+
+    if (q.length > 30) {
+      return res.status(400).json({
+        message: "Search query must not exceed 30 characters.",
+      });
+    }
+
+    const limit = 10;
+    let cursorData = null;
+
+    if (req.query.cursor) {
+      try {
+        const decoded = Buffer.from(req.query.cursor, "base64url").toString(
+          "utf8",
+        );
+
+        cursorData = JSON.parse(decoded);
+
+        if (
+          typeof cursorData.usernameLower !== "string" ||
+          !/^[a-f\d]{24}$/i.test(cursorData.id)
+        ) {
+          throw new Error("Invalid cursor");
+        }
+      } catch {
+        return res.status(400).json({
+          message: "Invalid pagination cursor.",
+        });
+      }
+    }
+
+    // Escape user input so it is treated as literal text.
+    const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const conditions = [
+      {
+        usernameLower: {
+          $regex: `^${escapedQuery}`,
+        },
+      },
+      {
+        active: true,
+        isEmailVerified: true,
+      },
+      {
+        _id: { $ne: req.user._id },
+      },
+    ];
+
+    if (cursorData) {
+      conditions.push({
+        $or: [
+          {
+            usernameLower: {
+              $gt: cursorData.usernameLower,
+            },
+          },
+          {
+            usernameLower: cursorData.usernameLower,
+            _id: { $gt: cursorData.id },
+          },
+        ],
+      });
+    }
+
+    const users = await User.find({
+      $and: conditions,
+    })
+      .select("_id username name profilePicture")
+      .sort({ usernameLower: 1, _id: 1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = users.length > limit;
+    const results = users.slice(0, limit);
+
+    const lastUser = results[results.length - 1];
+
+    const nextCursor =
+      hasMore && lastUser
+        ? Buffer.from(
+            JSON.stringify({
+              usernameLower: lastUser.username.toLowerCase(),
+              id: lastUser._id.toString(),
+            }),
+          ).toString("base64url")
+        : null;
+
+    return res.status(200).json({
+      users: results,
+      hasMore,
+      nextCursor,
+    });
+  } catch (error) {
+    console.error("Global username search error:", error);
+
+    return res.status(500).json({
+      message: "Failed to search users.",
+    });
+  }
+};

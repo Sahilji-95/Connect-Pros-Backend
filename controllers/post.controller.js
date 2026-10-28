@@ -218,7 +218,7 @@ export const getComment = async (req, res) => {
     }
 
     const comments = await Comment.find({ postId: post_id })
-      .populate("userId", "name username")
+      .populate("userId", "name username profilePicture")
       .sort({ createdAt: -1 });
 
     return res.status(200).json(comments);

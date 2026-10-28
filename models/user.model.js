@@ -11,6 +11,10 @@ const UserSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    usernameLower: {
+      type: String,
+      select: false,
+    },
     email: {
       type: String,
       required: true,
@@ -68,6 +72,14 @@ const UserSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+UserSchema.index({ usernameLower: 1, _id: 1 });
+
+UserSchema.pre("validate", function () {
+  if (typeof this.username === "string") {
+    this.usernameLower = this.username.trim().toLowerCase();
+  }
+});
 
 const User = mongoose.model("User", UserSchema);
 export default User;

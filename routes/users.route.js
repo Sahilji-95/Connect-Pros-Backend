@@ -22,6 +22,7 @@ import {
   verifyResetOTP,
   resetPassword,
   resendResetPasswordOTP,
+  searchUsersByUsername,
 } from "../controllers/user.controller.js";
 
 import {
@@ -105,8 +106,8 @@ router
   .route("/user/get_my_connections")
   .get(authMiddleware, getAllMyConnections);
 
-router
-  .route("/user/delete_connection")
-  .post(authMiddleware, deleteConnection);
+router.route("/user/delete_connection").post(authMiddleware, deleteConnection);
+
+router.route("/user/search").get(authMiddleware, searchUsersByUsername);
 
 export default router;
