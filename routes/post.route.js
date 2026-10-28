@@ -9,6 +9,7 @@ import {
   deleteComment,
   increment_likes,
   getPostsByUsername,
+  getPostById,
 } from "../controllers/post.controller.js";
 
 import { authMiddleware } from "../middleware/auth.js";
@@ -53,5 +54,7 @@ router.route("/comment/create_comment").post(authMiddleware, commentPost);
 router.route("/comment/get_comment").get(authMiddleware, getComment);
 
 router.route("/comment/delete_comment").delete(authMiddleware, deleteComment);
+
+router.route("/post/:id").get(authMiddleware, getPostById);
 
 export default router;

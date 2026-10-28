@@ -367,3 +367,53 @@ export const getPostsByUsername = async (req, res) => {
     });
   }
 };
+
+export const getPostById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const currentUserId = req.user?._id;
+
+    if (!id || !id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid post ID",
+      });
+    }
+
+    const post = await Post.findById(id).populate(
+      "userId",
+      "name username profilePicture",
+    );
+
+    if (!post || !post.userId) {
+      return res.status(404).json({
+        success: false,
+        message: "Post not found",
+      });
+    }
+
+    const postObject = post.toObject();
+
+    const isLiked = currentUserId
+      ? (post.likedBy || []).some(
+          (userId) => userId.toString() === currentUserId.toString(),
+        )
+      : false;
+
+    return res.status(200).json({
+      success: true,
+      post: {
+        ...postObject,
+        likes: post.likes ?? 0,
+        isLiked,
+      },
+    });
+  } catch (error) {
+    console.error("Get post by ID error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch post",
+    });
+  }
+};
