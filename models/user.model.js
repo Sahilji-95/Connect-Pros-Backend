@@ -37,6 +37,13 @@ const UserSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // Online / Offline tracking
+    lastSeen: {
+      type: Date,
+      default: null,
+    },
+
     resetPasswordOTP: {
       type: String,
       default: null,

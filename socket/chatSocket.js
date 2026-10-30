@@ -10,13 +10,15 @@ const RATE_LIMIT_WINDOW_MS = 10_000;
 const MAX_CHAT_MESSAGES = 10;
 const MAX_CHAT_READS = 10;
 
-// In-memory rate limits, shared across sockets in this Node.js process.
+// In-memory state for this Node.js process.
+// For multiple backend instances, move presence to Redis.
 const chatRateLimits = new Map();
+const onlineUsers = new Map(); // userId -> Set(socketId)
+const activeConversations = new Map(); // socketId -> conversationId
 
 const isRateLimited = (userId, eventType, maxRequests) => {
   const now = Date.now();
 
-  // Remove expired entries when the map grows large.
   if (chatRateLimits.size > 10_000) {
     for (const [key, entry] of chatRateLimits) {
       if (now >= entry.resetAt) {
@@ -37,9 +39,7 @@ const isRateLimited = (userId, eventType, maxRequests) => {
     return false;
   }
 
-  if (current.count >= maxRequests) {
-    return true;
-  }
+  if (current.count >= maxRequests) return true;
 
   current.count += 1;
   return false;
@@ -61,9 +61,7 @@ const isSessionValid = async (socket) => {
   try {
     const { userId, tokenVersion } = socket.data.user ?? {};
 
-    if (!userId || !Number.isInteger(tokenVersion)) {
-      return false;
-    }
+    if (!userId || !Number.isInteger(tokenVersion)) return false;
 
     const user = await User.findById(userId)
       .select("_id active tokenVersion")
@@ -86,8 +84,57 @@ const sendError = (message, code) => ({
   message,
 });
 
+const addOnlineSocket = (userId, socketId) => {
+  let sockets = onlineUsers.get(userId);
+
+  if (!sockets) {
+    sockets = new Set();
+    onlineUsers.set(userId, sockets);
+  }
+
+  const wasOffline = sockets.size === 0;
+  sockets.add(socketId);
+
+  return wasOffline;
+};
+
+const removeOnlineSocket = (userId, socketId) => {
+  const sockets = onlineUsers.get(userId);
+
+  if (!sockets) return false;
+
+  sockets.delete(socketId);
+
+  if (sockets.size > 0) return false;
+
+  onlineUsers.delete(userId);
+  return true;
+};
+
+const isUserViewingConversation = (userId, conversationId) => {
+  const sockets = onlineUsers.get(userId);
+
+  if (!sockets) return false;
+
+  for (const socketId of sockets) {
+    if (activeConversations.get(socketId) === conversationId) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getOnlineUserIds = () => Array.from(onlineUsers.keys());
+
 export const registerChatSocket = (io) => {
   io.on("connection", (socket) => {
+    socket.on("presence:get", () => {
+      socket.emit("presence:initial", {
+        onlineUserIds: getOnlineUserIds(),
+      });
+    });
+
     const senderId = socket.data.user?.userId;
 
     if (!senderId) {
@@ -96,6 +143,71 @@ export const registerChatSocket = (io) => {
     }
 
     socket.join(userRoom(senderId));
+
+    const becameOnline = addOnlineSocket(senderId, socket.id);
+
+    // Send current online users to this newly connected socket.
+    socket.emit("presence:initial", {
+      onlineUserIds: getOnlineUserIds(),
+    });
+
+    // Broadcast only when this user changes from offline to online.
+    if (becameOnline) {
+      io.emit("presence:update", {
+        userId: senderId,
+        online: true,
+      });
+    }
+
+    // SET ACTIVE CONVERSATION FOR THIS SOCKET/TAB
+    socket.on("chat:active", async (payload, acknowledge) => {
+      const ack = typeof acknowledge === "function" ? acknowledge : () => {};
+
+      try {
+        if (!(await isSessionValid(socket))) {
+          socket.disconnect(true);
+
+          return ack(
+            sendError(
+              "Session expired. Please login again.",
+              "SESSION_EXPIRED",
+            ),
+          );
+        }
+
+        const { conversationId } = payload ?? {};
+
+        if (!mongoose.isValidObjectId(conversationId)) {
+          return ack(sendError("Invalid conversation ID.", "INVALID_INPUT"));
+        }
+
+        const conversation = await Conversation.findOne({
+          _id: conversationId,
+          participants: senderId,
+        }).select("_id");
+
+        if (!conversation) {
+          return ack(
+            sendError("Conversation not found.", "CONVERSATION_NOT_FOUND"),
+          );
+        }
+
+        activeConversations.set(socket.id, conversation._id.toString());
+
+        return ack({ success: true });
+      } catch (error) {
+        console.error("Set active conversation error:", error);
+
+        return ack(
+          sendError("Unable to set active conversation.", "ACTIVE_FAILED"),
+        );
+      }
+    });
+
+    // CLEAR ACTIVE CONVERSATION FOR THIS SOCKET/TAB
+    socket.on("chat:inactive", () => {
+      activeConversations.delete(socket.id);
+    });
 
     // SEND MESSAGE
     socket.on("chat:send", async (payload, acknowledge) => {
@@ -195,7 +307,6 @@ export const registerChatSocket = (io) => {
           });
         }
 
-        // Limit only new message attempts.
         if (isRateLimited(senderId, "chat:send", MAX_CHAT_MESSAGES)) {
           return ack(
             sendError(
@@ -255,9 +366,42 @@ export const registerChatSocket = (io) => {
 
         const message = savedMessage.toObject();
 
+        // Preserve existing delivery to sender and recipient rooms.
         io.to(userRoom(senderId))
           .to(userRoom(recipientId))
           .emit("chat:message", message);
+
+        // Popup only when no connected socket is actively viewing
+        // this exact conversation.
+        const recipientIsViewing = isUserViewingConversation(
+          recipientId,
+          conversation._id.toString(),
+        );
+
+        if (!recipientIsViewing) {
+          const sender = await User.findById(senderId)
+            .select("_id name username profilePicture")
+            .lean();
+
+          io.to(userRoom(recipientId)).emit("chat:popup", {
+            conversationId: conversation._id.toString(),
+            message,
+            sender: sender
+              ? {
+                  _id: sender._id,
+                  name: sender.name,
+                  username: sender.username,
+                  profilePicture: sender.profilePicture,
+                }
+              : {
+                  _id: senderId,
+                  name: "New message",
+                },
+          });
+        }
+
+        // No persistent new_message notification is created.
+        // The chat:popup event handles temporary in-app popups.
 
         return ack({
           success: true,
@@ -273,7 +417,7 @@ export const registerChatSocket = (io) => {
       }
     });
 
-    // MARK MESSAGES AS READ
+    // MARK SELECTED MESSAGES AS READ
     socket.on("chat:read", async (payload, acknowledge) => {
       const ack = typeof acknowledge === "function" ? acknowledge : () => {};
 
@@ -395,6 +539,42 @@ export const registerChatSocket = (io) => {
         return ack(
           sendError("Unable to mark messages as read.", "READ_FAILED"),
         );
+      }
+    });
+
+    // CLEAN UP ONLY THIS SOCKET'S PRESENCE/ACTIVE CHAT STATE
+    socket.on("disconnect", async () => {
+      activeConversations.delete(socket.id);
+
+      const becameOffline = removeOnlineSocket(senderId, socket.id);
+
+      // User is offline only when their last socket disconnects.
+      if (becameOffline) {
+        const lastSeen = new Date();
+
+        try {
+          await User.updateOne(
+            { _id: senderId },
+            {
+              $set: { lastSeen },
+            },
+          );
+
+          io.emit("presence:update", {
+            userId: senderId,
+            online: false,
+            lastSeen,
+          });
+        } catch (error) {
+          console.error("Update lastSeen error:", error);
+
+          // Still broadcast offline status if DB update fails.
+          io.emit("presence:update", {
+            userId: senderId,
+            online: false,
+            lastSeen,
+          });
+        }
       }
     });
   });

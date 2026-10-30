@@ -2,6 +2,7 @@ import User from "../models/user.model.js";
 import Profile from "../models/profile.model.js";
 import connectionReq from "../models/connection.model.js";
 import PendingSignup from "../models/pendingSignup.model.js";
+import { createAndEmitNotification } from "../services/notification.service.js";
 
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
@@ -1167,6 +1168,14 @@ export const sendConnecton = async (req, res) => {
       status: "pending",
     });
 
+    await createAndEmitNotification(req.app.get("io"), {
+      recipientId: connectionUser._id,
+      senderId: userId,
+      type: "connection_request",
+      message: "Someone sent you a connection request.",
+      relatedId: connection._id,
+    });
+
     return res.status(201).json({
       message: "Request sent",
       connection,
@@ -1300,6 +1309,16 @@ export const acceptConnectionRequest = async (req, res) => {
     connection.status = action_type === "accept" ? "accepted" : "rejected";
 
     await connection.save();
+
+    if (action_type === "accept") {
+      await createAndEmitNotification(req.app.get("io"), {
+        recipientId: connection.userId,
+        senderId: req.user._id,
+        type: "connection_accepted",
+        message: "Your connection request was accepted.",
+        relatedId: connection._id,
+      });
+    }
 
     return res.status(200).json({
       message:

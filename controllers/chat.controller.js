@@ -26,16 +26,54 @@ export const getConversations = async (req, res) => {
       participants: userId,
     })
       .sort({ lastMessageAt: -1, updatedAt: -1 })
-      .populate("participants", "name username profilePicture")
+      .populate("participants", "name username profilePicture lastSeen")
       .populate({
         path: "lastMessage",
         select: "senderId recipientId text type readAt createdAt",
       })
       .lean();
 
+    // Fetch all unread message counts in one aggregation.
+    const unreadCounts = await Message.aggregate([
+      {
+        $match: {
+          recipientId: new mongoose.Types.ObjectId(userId),
+          readAt: null,
+          conversationId: {
+            $in: conversations.map((conversation) => conversation._id),
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$conversationId",
+          unreadCount: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Convert aggregation results into a lookup map.
+    const unreadCountMap = new Map(
+      unreadCounts.map((item) => [item._id.toString(), item.unreadCount]),
+    );
+
+    let totalUnreadCount = 0;
+
+    const conversationsWithUnreadCount = conversations.map((conversation) => {
+      const unreadCount = unreadCountMap.get(conversation._id.toString()) || 0;
+
+      totalUnreadCount += unreadCount;
+
+      return {
+        ...conversation,
+        unreadCount,
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      conversations,
+      conversations: conversationsWithUnreadCount,
+      totalUnreadCount,
     });
   } catch (error) {
     console.error("Get conversations error:", error);
@@ -126,7 +164,10 @@ export const createOrGetConversation = async (req, res) => {
       }
     }
 
-    await conversation.populate("participants", "name username profilePicture");
+    await conversation.populate(
+      "participants",
+      "name username profilePicture lastSeen ",
+    );
 
     return res.status(created ? 201 : 200).json({
       success: true,

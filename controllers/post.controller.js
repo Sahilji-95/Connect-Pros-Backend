@@ -2,6 +2,8 @@ import Post from "../models/post.model.js";
 import User from "../models/user.model.js";
 import Comment from "../models/comment.model.js";
 import cloudinary from "../config/cloudinary.js";
+import connectionReq from "../models/connection.model.js";
+import { createAndEmitNotification } from "../services/notification.service.js";
 
 export const activeCheck = async (req, res) => {
   return res.status(200).json({ message: "RUNNING" });
@@ -48,6 +50,37 @@ export const createNewPost = async (req, res) => {
     await post.save();
 
     await post.populate("userId", "name username email profilePicture");
+
+    const io = req.app.get("io");
+
+    try {
+      const connections = await connectionReq
+        .find({
+          status: "accepted",
+          $or: [{ userId }, { connectionId: userId }],
+        })
+        .select("userId connectionId");
+
+      const recipientIds = connections.map((connection) =>
+        connection.userId.toString() === userId.toString()
+          ? connection.connectionId
+          : connection.userId,
+      );
+
+      await Promise.all(
+        recipientIds.map((recipientId) =>
+          createAndEmitNotification(io, {
+            recipientId,
+            senderId: userId,
+            type: "new_post",
+            message: `${post.userId.name} shared a new post.`,
+            relatedId: post._id,
+          }),
+        ),
+      );
+    } catch (error) {
+      console.error("New post notifications error:", error.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -195,6 +228,16 @@ export const commentPost = async (req, res) => {
 
     await comment.save();
 
+    const io = req.app.get("io");
+
+    await createAndEmitNotification(io, {
+      recipientId: post.userId,
+      senderId: userId,
+      type: "post_comment",
+      message: "Someone commented on your post.",
+      relatedId: post._id,
+    });
+
     return res.status(201).json({
       message: "Comment posted",
       comment,
@@ -279,7 +322,7 @@ export const increment_likes = async (req, res) => {
       });
     }
 
-    const existing = await Post.findById(post_id).select("likedBy");
+    const existing = await Post.findById(post_id).select("likedBy  userId");
 
     if (!existing) {
       return res.status(404).json({
@@ -311,6 +354,17 @@ export const increment_likes = async (req, res) => {
       },
     );
 
+    if (!alreadyLiked) {
+      const io = req.app.get("io");
+
+      await createAndEmitNotification(io, {
+        recipientId: existing.userId,
+        senderId: userId,
+        type: "post_like",
+        message: "Someone liked your post.",
+        relatedId: post._id,
+      });
+    }
     if (!post) {
       return res.status(409).json({
         message: "Like status changed. Please try again.",

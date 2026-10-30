@@ -12,6 +12,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { socketAuth } from "./middleware/socketAuth.js";
 import { registerChatSocket } from "./socket/chatSocket.js";
+import notificationRoute from "./routes/notification.route.js";
 
 dotenv.config();
 
@@ -86,6 +87,7 @@ app.use(generalLimiter);
 app.use(postRoute);
 app.use(userRoute);
 app.use(chatRoute);
+app.use(notificationRoute);
 
 const start = async () => {
   try {
