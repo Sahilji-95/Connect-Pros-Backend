@@ -1068,7 +1068,7 @@ export const getAllUserProfile = async (req, res) => {
     const allUser = await Profile.find({})
       .populate({
         path: "userId",
-        select: "username profilePicture email name",
+        select: "username profilePicture  name",
         match: { _id: { $ne: null } },
       })
       .lean();
@@ -1096,7 +1096,7 @@ export const dwonlaodProfile = async (req, res) => {
 
     const userProfile = await Profile.findOne({
       userId,
-    }).populate("userId", "username email name profilePicture");
+    }).populate("userId", "username  name profilePicture");
 
     if (!userProfile) {
       return res.status(404).json({
@@ -1192,7 +1192,7 @@ export const getMyConnectionReq = async (req, res) => {
   try {
     const allConnections = await connectionReq
       .find({ userId: req.user._id })
-      .populate("connectionId", "name username email profilePicture");
+      .populate("connectionId", "name username  profilePicture");
 
     return res.status(200).json({ allConnections });
   } catch (error) {
@@ -1210,7 +1210,7 @@ export const myAllConnections = async (req, res) => {
         connectionId: req.user._id,
         status: "pending",
       })
-      .populate("userId", "name username email profilePicture");
+      .populate("userId", "name username  profilePicture");
 
     return res.status(200).json(connections);
   } catch (error) {
@@ -1231,8 +1231,8 @@ export const getAllMyConnections = async (req, res) => {
           { connectionId: userId, status: "accepted" },
         ],
       })
-      .populate("userId", "name username email profilePicture")
-      .populate("connectionId", "name username email profilePicture");
+      .populate("userId", "name username  profilePicture")
+      .populate("connectionId", "name username  profilePicture");
 
     const myConnections = connections.map((connection) => {
       const isSender = connection.userId._id.equals(userId);
@@ -1379,7 +1379,6 @@ export const getConnectionStatus = async (req, res) => {
         status: "none",
       });
     }
-
     if (connection.status === "accepted") {
       return res.status(200).json({
         status: "accepted",
@@ -1431,7 +1430,7 @@ export const getProfileByUsername = async (req, res) => {
 
     const userProfile = await Profile.findOne({
       userId: user._id,
-    }).populate("userId", "username email name profilePicture");
+    }).populate("userId", "username name profilePicture");
 
     if (!userProfile) {
       return res.status(404).json({

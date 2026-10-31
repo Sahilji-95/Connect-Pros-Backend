@@ -70,7 +70,7 @@ router.route("/user/get_all_user").get(authMiddleware, getAllUserProfile);
 router
   .route("/user/get_profile_by_username")
   .get(authMiddleware, getProfileByUsername);
-router.route("/user/dwonlaod_resume").get(dwonlaodProfile);
+router.route("/user/dwonlaod_resume").get(authMiddleware, dwonlaodProfile);
 
 router
   .route("/upload_profile_picture")
