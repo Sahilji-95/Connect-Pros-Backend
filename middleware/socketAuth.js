@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import * as cookie from "cookie";
 import User from "../models/user.model.js";
+import mongoose from "mongoose";
 
 export const socketAuth = async (socket, next) => {
   try {
